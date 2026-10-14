@@ -1277,9 +1277,9 @@ function doPost(e) {
                 return;
             }
             localStorage.setItem('spmb_webhook_url', url);
-            updateWebhookBadgeStatus(true);
-            showToast('URL Google Sheets Webhook berhasil disimpan!');
-            fetchFromGoogleSheets(true);
+            updateWebhookBadgeStatus(false);
+            showToast('URL disimpan. Menguji koneksi ke database pusat...');
+            fetchFromGoogleSheets(true).then(ok => updateWebhookBadgeStatus(ok === true));
         }
 
         function updateWebhookBadgeStatus(isConnected) {
@@ -1321,13 +1321,9 @@ function doPost(e) {
             }
             const jurusan = jurusanRadio.value;
 
-            // GENERATE REGISTRATION CODE FORMAT: (Jurusan) - 27 - (urutan)
-            const currentNum = regCounters[jurusan] || 1;
-            const regCode = `${jurusan}-27-${String(currentNum).padStart(3, '0')}`;
-
-            // Increment counter untuk pendaftar jurusan berikutnya
-            regCounters[jurusan] = currentNum + 1;
-            localStorage.setItem('spmb_counters', JSON.stringify(regCounters));
+            // Nomor pendaftaran dibuat oleh Apps Script di server agar terpusat.
+            const clientId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `spmb-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+            const regCode = `PENDING-${clientId.slice(0, 8).toUpperCase()}`;
 
             // Extract Asal Sekolah
             const sekolahSelect = document.getElementById('field_16_asal_sekolah_select').value;
@@ -1362,6 +1358,8 @@ function doPost(e) {
             // Construct Full Student Object
             const student = {
                 noReg: regCode,
+                clientId: clientId,
+                syncStatus: 'pending',
                 timestamp: now.toLocaleString('id-ID'),
                 regDateFormatted: formattedDate,
                 field_1_nama: document.getElementById('field_1_nama').value.trim(),
@@ -1407,60 +1405,80 @@ function doPost(e) {
                 field_30_hp_ortu: document.getElementById('field_30_hp_ortu').value.trim()
             };
 
-            // Save locally
+            // Simpan sebagai antrean lokal sementara. Data pusat tetap sumber utama.
             studentsDatabase.unshift(student);
             localStorage.setItem('spmb_students_db', JSON.stringify(studentsDatabase));
-
             currentStudentData = student;
-
-            // Sync POST to Google Sheets
-            postToGoogleSheets(student);
-
             renderTable();
-            openSuccessModal(student);
+
+            const submitButton = document.getElementById('submit-btn');
+            if (submitButton) submitButton.disabled = true;
+            postToGoogleSheets(student).finally(() => {
+                if (submitButton) submitButton.disabled = false;
+            });
         }
 
-        // Post Data to Google Sheets Webhook
-        function postToGoogleSheets(studentData) {
+        // Kirim sebagai text/plain agar POST cross-origin tidak memicu preflight.
+        // Karena mode no-cors tidak mengizinkan membaca respons POST, verifikasi dilakukan
+        // dengan GET berikutnya: data dianggap tersinkron hanya jika ditemukan di server.
+        async function postToGoogleSheets(studentData) {
             const webhookUrl = localStorage.getItem('spmb_webhook_url');
-            if (!webhookUrl) return;
-
-            fetch(webhookUrl, {
-                method: 'POST',
-                mode: 'no-cors',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(studentData)
-            })
-            .then(() => {
-                showToast('Data berhasil disinkronkan ke Google Sheets!');
-            })
-            .catch(err => console.error('Sheet sync error:', err));
+            if (!webhookUrl) {
+                showToast('Data hanya tersimpan sementara di komputer ini. Hubungkan URL Apps Script terlebih dahulu.', 'warning');
+                openSuccessModal(studentData);
+                return;
+            }
+            try {
+                await fetch(webhookUrl, {
+                    method: 'POST', mode: 'no-cors',
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                    body: JSON.stringify({ action: 'submit', student: studentData })
+                });
+                // Apps Script mungkin memerlukan waktu untuk menulis baris.
+                for (let attempt = 0; attempt < 6; attempt++) {
+                    await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 900 : 1200));
+                    const synced = await fetchFromGoogleSheets(false, studentData.clientId);
+                    if (synced) {
+                        currentStudentData = synced;
+                        openSuccessModal(synced);
+                        showToast(`Data terverifikasi di Google Sheets: ${synced.noReg}`);
+                        return;
+                    }
+                }
+                showToast('Pengiriman belum dapat diverifikasi. Jangan kirim ulang dulu; tekan Refresh Realtime dan periksa Google Sheets.', 'warning');
+            } catch (err) {
+                console.error('Sheet sync error:', err);
+                showToast('Sinkronisasi gagal. Periksa koneksi dan URL Apps Script.', 'warning');
+            }
         }
 
-        // Fetch Realtime Data from Google Sheets
-        function fetchFromGoogleSheets(showNotification = false) {
+        // Ambil database pusat. Array kosong juga harus menggantikan cache lokal.
+        async function fetchFromGoogleSheets(showNotification = false, wantedClientId = null) {
             const webhookUrl = localStorage.getItem('spmb_webhook_url');
-            if (!webhookUrl) return;
-
+            if (!webhookUrl) {
+                if (showNotification) showToast('URL Apps Script belum diatur.', 'warning');
+                return null;
+            }
             const spinner = document.getElementById('sync-spinner');
             if (spinner) spinner.classList.remove('hidden');
-
-            fetch(webhookUrl)
-                .then(res => res.json())
-                .then(data => {
-                    if (Array.isArray(data) && data.length > 0) {
-                        studentsDatabase = data;
-                        localStorage.setItem('spmb_students_db', JSON.stringify(studentsDatabase));
-                        renderTable();
-                        if (showNotification) showToast(`Berhasil memperbarui ${data.length} data pendaftar dari Google Sheets!`);
-                    }
-                })
-                .catch(err => {
-                    console.log('Realtime fetch status:', err);
-                })
-                .finally(() => {
-                    if (spinner) spinner.classList.add('hidden');
-                });
+            try {
+                const response = await fetch(webhookUrl, { method: 'GET', cache: 'no-store' });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                if (!Array.isArray(data)) throw new Error('Format respons bukan array');
+                studentsDatabase = data;
+                localStorage.setItem('spmb_students_db', JSON.stringify(studentsDatabase));
+                renderTable();
+                if (showNotification) showToast(`Database pusat diperbarui: ${data.length} pendaftar.`);
+                if (wantedClientId) return data.find(s => s.clientId === wantedClientId) || null;
+                return true;
+            } catch (err) {
+                console.error('Realtime fetch error:', err);
+                if (showNotification) showToast('Gagal membaca Google Sheets. Periksa URL/deployment Apps Script.', 'warning');
+                return null;
+            } finally {
+                if (spinner) spinner.classList.add('hidden');
+            }
         }
 
         // Modal Controls
@@ -1935,12 +1953,12 @@ function doPost(e) {
             studentsDatabase = studentsDatabase.filter(s => s.noReg !== noReg);
             localStorage.setItem('spmb_students_db', JSON.stringify(studentsDatabase));
             renderTable();
-            showToast(`Data ${noReg} berhasil dihapus dari database lokal.`);
+            showToast(`Data ${noReg} dihapus dari cache komputer ini saja. Untuk menghapus permanen, lakukan melalui pengelola Google Sheets.`, 'warning');
         }
 
         function promptClearAllData() {
             document.getElementById('confirm-title').innerText = "Reset Database Lokal";
-            document.getElementById('confirm-message').innerText = "Apakah Anda yakin ingin menghapus SELURUH data pendaftar dari penyimpanan browser lokal ini?";
+            document.getElementById('confirm-message').innerText = "Apakah Anda yakin ingin menghapus cache data pada browser komputer ini? Data Google Sheets pusat tidak ikut terhapus.";
             
             pendingAction = function() {
                 clearAllData();
@@ -1953,7 +1971,7 @@ function doPost(e) {
             studentsDatabase = [];
             localStorage.removeItem('spmb_students_db');
             renderTable();
-            showToast("Database lokal berhasil dibersihkan!");
+            showToast("Cache lokal berhasil dibersihkan. Google Sheets pusat tetap menyimpan data.");
         }
 
         // Modal Action Listener
