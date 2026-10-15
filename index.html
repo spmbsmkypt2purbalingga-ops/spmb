@@ -129,7 +129,7 @@
                 </div>
                 <div>
                     <h1 class="text-lg font-bold text-gray-800 leading-tight">SPMB SMK YPT 2 Purbalingga</h1>
-                    <p class="text-xs text-gray-500">Sistem Penerimaan Murid Baru Online (Spreadsheet Realtime)</p>
+                    <p class="text-xs text-gray-500">Sistem Penerimaan Murid Baru</p>
                 </div>
             </div>
 
@@ -1633,7 +1633,7 @@ function doPost(e) {
             document.getElementById('pdf-code').innerText = data.noReg || '-';
             document.getElementById('pdf-1').innerText = data.field_1_nama || '-';
             document.getElementById('pdf-2').innerText = data.field_2_jk || '-';
-            document.getElementById('pdf-3-4').innerText = `${data.field_3_tempat_lahir || '-'}, ${data.field_4_tgl_lahir || '-'}`;
+            document.getElementById('pdf-3-4').innerText = `${data.field_3_tempat_lahir || '-'}, ${data.field_4_tgl_lahir ? formatTanggalDokumen(data.field_4_tgl_lahir) : '-'}`;
             
             // Format Alamat dengan RT dan RW
             const rtVal = data.field_5_rt || (data.field_5_rtrw ? data.field_5_rtrw.split('/')[0] : '');
