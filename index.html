@@ -945,11 +945,7 @@ function doPost(e) {
                     <span>Download Formulir Lengkap PDF</span>
                 </button>
 
-                <button onclick="printKartuDirectly()" class="w-full py-2 bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold rounded-xl text-xs flex items-center justify-center space-x-2 transition">
-                    <i class="fas fa-print"></i>
-                    <span>Cetak via Print Browser</span>
-                </button>
-
+                
                 <button onclick="closeSuccessModal()" class="w-full py-2 bg-gray-100 hover:bg-gray-200 text-gray-600 font-medium rounded-xl text-xs">
                     Tutup & Kembali
                 </button>
@@ -1606,6 +1602,32 @@ function doPost(e) {
             window.print();
         }
 
+        // Normalisasi tanggal untuk dokumen PDF (hindari format ISO seperti 2026-10-15T00:00:00.000Z)
+        function formatTanggalDokumen(value) {
+            const formatLokal = (date) => date.toLocaleDateString('id-ID', {
+                day: 'numeric', month: 'long', year: 'numeric'
+            });
+
+            if (value === null || value === undefined || value === '') {
+                return formatLokal(new Date());
+            }
+
+            // Jika data dari Google Sheets berbentuk ISO, ambil komponen tanggalnya
+            // agar tanggal tidak bergeser karena perbedaan zona waktu.
+            const isoMatch = String(value).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+            if (isoMatch) {
+                const date = new Date(
+                    Number(isoMatch[1]),
+                    Number(isoMatch[2]) - 1,
+                    Number(isoMatch[3])
+                );
+                return formatLokal(date);
+            }
+
+            // Jika tanggal sudah berupa teks lokal, pertahankan format yang ada.
+            return String(value);
+        }
+
         // Populate PDF Printable Element for full form with form inputs
         function preparePDFData(data) {
             document.getElementById('pdf-code').innerText = data.noReg || '-';
@@ -1648,7 +1670,7 @@ function doPost(e) {
             document.getElementById('pdf-27').innerText = data.field_27_penyakit || 'Tidak ada';
             document.getElementById('pdf-28-29').innerText = `Prestasi: ${data.field_28_prestasi || 'Tidak ada'} | Cita-cita: ${data.field_29_cita_cita || '-'}`;
 
-            document.getElementById('pdf-date-now').innerText = data.regDateFormatted || new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
+            document.getElementById('pdf-date-now').innerText = formatTanggalDokumen(data.regDateFormatted);
             document.getElementById('pdf-signature-name').innerText = `( ${data.field_1_nama || '................................'} )`;
         }
 
