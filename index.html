@@ -1713,30 +1713,58 @@ function doPost(e) {
             window.print();
         }
 
-        // Normalisasi tanggal untuk dokumen PDF (hindari format ISO seperti 2026-10-15T00:00:00.000Z)
+        // Normalisasi tanggal untuk dokumen PDF tanpa menggeser hari akibat zona waktu.
+        // Tanggal YYYY-MM-DD diproses sebagai komponen teks, bukan Date ISO UTC.
         function formatTanggalDokumen(value) {
-            const formatLokal = (date) => date.toLocaleDateString('id-ID', {
-                day: 'numeric', month: 'long', year: 'numeric'
-            });
-
-            if (value === null || value === undefined || value === '') {
-                return formatLokal(new Date());
+            const teks = String(value ?? '').trim();
+            if (!teks) {
+                return new Date().toLocaleDateString('id-ID', {
+                    day: 'numeric', month: 'long', year: 'numeric'
+                });
             }
 
-            // Jika data dari Google Sheets berbentuk ISO, ambil komponen tanggalnya
-            // agar tanggal tidak bergeser karena perbedaan zona waktu.
-            const isoMatch = String(value).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
-            if (isoMatch) {
-                const date = new Date(
-                    Number(isoMatch[1]),
-                    Number(isoMatch[2]) - 1,
-                    Number(isoMatch[3])
-                );
-                return formatLokal(date);
+            let tahun, bulan, hari;
+            let cocok = teks.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:$|T|\s)/);
+            if (cocok) {
+                tahun = Number(cocok[1]); bulan = Number(cocok[2]); hari = Number(cocok[3]);
+            } else {
+                // Dukung juga tanggal berbentuk DD/MM/YYYY atau DD-MM-YYYY.
+                cocok = teks.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+                if (cocok) {
+                    hari = Number(cocok[1]); bulan = Number(cocok[2]); tahun = Number(cocok[3]);
+                } else {
+                    // Jika format tidak dikenali, jangan menebak dan jangan mengubah nilainya.
+                    return teks;
+                }
             }
 
-            // Jika tanggal sudah berupa teks lokal, pertahankan format yang ada.
-            return String(value);
+            const date = new Date(tahun, bulan - 1, hari);
+            if (date.getFullYear() !== tahun || date.getMonth() !== bulan - 1 || date.getDate() !== hari) {
+                return teks;
+            }
+            return date.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
+        }
+
+        // Format tanggal lahir untuk CSV sebagai teks agar Excel tidak menafsirkannya
+        // ulang menggunakan zona waktu atau format tanggal regional komputer.
+        function formatTanggalLahirCSV(value) {
+            const teks = String(value ?? '').trim();
+            if (!teks) return '';
+
+            let tahun, bulan, hari;
+            let cocok = teks.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:$|T|\s)/);
+            if (cocok) {
+                tahun = Number(cocok[1]); bulan = Number(cocok[2]); hari = Number(cocok[3]);
+            } else {
+                cocok = teks.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+                if (!cocok) return teks;
+                hari = Number(cocok[1]); bulan = Number(cocok[2]); tahun = Number(cocok[3]);
+            }
+            const date = new Date(tahun, bulan - 1, hari);
+            if (date.getFullYear() !== tahun || date.getMonth() !== bulan - 1 || date.getDate() !== hari) return teks;
+            const dua = n => String(n).padStart(2, '0');
+            // Rumus CSV menghasilkan teks persis DD/MM/YYYY, bukan tanggal yang ditafsir ulang Excel.
+            return `="${dua(hari)}/${dua(bulan)}/${tahun}"`;
         }
 
         // Populate PDF Printable Element for full form with form inputs
@@ -2138,7 +2166,12 @@ function doPost(e) {
 
             studentsDatabase.forEach(row => {
                 const values = headers.map(header => {
-                    const val = row[header] !== undefined ? row[header] : "";
+                    let val = row[header] !== undefined ? row[header] : "";
+                    // Khusus tanggal lahir, keluarkan sebagai teks DD/MM/YYYY agar
+                    // tanggal tidak berubah saat CSV dibuka di Excel.
+                    if (header === 'field_4_tgl_lahir') {
+                        val = formatTanggalLahirCSV(val);
+                    }
                     const escaped = ('' + val).replace(/"/g, '""');
                     return `"${escaped}"`;
                 });
